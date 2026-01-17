@@ -15,7 +15,7 @@ from app.core.security import (
     create_csrf_token,
     verify_csrf_token,
 )
-from app.core.database import Base, get_db, create_tables
+from app.core.database import get_db, create_tables
 
 __all__ = [
     "settings",
@@ -28,7 +28,6 @@ __all__ = [
     "verify_verification_token",
     "create_csrf_token",
     "verify_csrf_token",
-    "Base",
     "get_db",
     "create_tables",
 ]
