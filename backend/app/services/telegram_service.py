@@ -110,7 +110,8 @@ class TelegramStorage:
                 api_hash=self.api_hash,
                 bot_token=self.bot_token,
                 in_memory=True,
-                no_updates=True
+                no_updates=True,
+                ipv6=False
             )
         
         future = asyncio.run_coroutine_threadsafe(create_bot(), _loop)
@@ -178,7 +179,7 @@ class TelegramStorage:
                 async def work():
                     await self.client.start()
                 
-                self._run_async(work(), timeout=60)
+                self._run_async(work(), timeout=120)
                 self._connected = True
                 print(f"[TELEGRAM] Connected to channel {self.channel_id}")
                 return self
