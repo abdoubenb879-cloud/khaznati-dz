@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+
+{% block title %}الرئيسية{% endblock %}
+
+{% block nav %}
+<a href="/login.html" class="btn btn-ghost" data-i18n="login">تسجيل الدخول</a>
+<a href="/register.html" class="btn btn-primary" data-i18n="register">إنشاء حساب</a>
+{% endblock %}
+
+{% block content %}
+<div class="landing-page">
+    <!-- Hero Section -->
+    <section class="hero-section">
+        <div class="container">
+            <div class="hero-content text-center">
+                <h1 class="gradient-text mb-4" data-i18n="landing.hero_title">
+                    خزّن ملفاتك بأمان،<br>وين ما كنت في الجزائر
+                </h1>
+                <p class="hero-desc mb-6" data-i18n="landing.hero_desc"
+                    style="font-size: var(--text-xl); max-width: 600px; margin-left: auto; margin-right: auto;">
+                    مساحة تخزين سحابية سريعة، آمنة، ومصممة خصيصاً للجزائريين. جربها باطل اليوم.
+                </p>
+                <div class="hero-actions" style="display: flex; gap: var(--space-4); justify-content: center;">
+                    <a href="/register.html" class="btn btn-primary btn-lg" data-i18n="landing.cta_primary">
+                        ابدا تجربتك المجانية
+                    </a>
+                    <a href="#features" class="btn btn-secondary btn-lg" data-i18n="landing.cta_secondary">
+                        تعرف علينا
+                    </a>
+                </div>
+            </div>
+
+            <!-- Hero Image / Visual -->
+            <div class="hero-visual mt-6" style="margin-top: var(--space-12); position: relative;">
+                <div class="card card-glass"
+                    style="max-width: 900px; margin: 0 auto; height: 400px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--neutral-700);">
+                    <!-- Placeholder for App Screenshot -->
+                    <div style="text-align: center; opacity: 0.5;">
+                        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="1">
+                            <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z" />
+                        </svg>
+                        <p class="mt-4">App Screenshot Mockup</p>
+                    </div>
+                </div>
+                <!-- Decorative Glow -->
+                <div
+                    style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 60%; height: 60%; background: var(--primary-500); filter: blur(120px); opacity: 0.15; z-index: -1;">
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section id="features" style="padding: var(--space-16) 0;">
+        <div class="container">
+            <div
+                style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: var(--space-8);">
+                <!-- Feature 1 -->
+                <div class="card card-glass text-center">
+                    <div
+                        style="width: 48px; height: 48px; background: rgba(14, 165, 233, 0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto var(--space-4) auto; color: var(--primary-400);">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z" />
+                        </svg>
+                    </div>
+                    <h3 class="mb-4" data-i18n="landing.feature_1">سريع وسهل</h3>
+                    <p data-i18n="landing.feature_1_desc">يعمل مليح حتى مع انترنت ضعيفة</p>
+                </div>
+
+                <!-- Feature 2 -->
+                <div class="card card-glass text-center">
+                    <div
+                        style="width: 48px; height: 48px; background: rgba(34, 197, 94, 0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto var(--space-4) auto; color: var(--success);">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                        </svg>
+                    </div>
+                    <h3 class="mb-4" data-i18n="landing.feature_2">خصوصية مضمونة</h3>
+                    <p data-i18n="landing.feature_2_desc">ملفاتك مشفرة ومؤمنة 100%</p>
+                </div>
+
+                <!-- Feature 3 -->
+                <div class="card card-glass text-center">
+                    <div
+                        style="width: 48px; height: 48px; background: rgba(245, 158, 11, 0.1); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto var(--space-4) auto; color: var(--warning);">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <path
+                                d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
+                        </svg>
+                    </div>
+                    <h3 class="mb-4" data-i18n="landing.feature_3">واجهة بالعربية</h3>
+                    <p data-i18n="landing.feature_3_desc">كلش مفهوم وواضح بلغتنا</p>
+                </div>
+            </div>
+        </div>
+    </section>
+</div>
+
+<style>
+    /* Inline styles for landing specifics not in main.css yet */
+    .hero-section {
+        padding: var(--space-12) 0 var(--space-8);
+        min-height: 80vh;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+    }
+</style>
+{% endblock %}
