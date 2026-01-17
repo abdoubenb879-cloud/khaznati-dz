@@ -6,10 +6,17 @@ const translations = {
         nav_trash: 'المهملات',
         nav_settings: 'الإعدادات',
         search_placeholder: 'بحث عن ملفات...',
-        upload_cta: 'رفع ملف جديد',
-        welcome: 'مرحباً بك في خزنتي',
+        upload_cta: 'رفع ملف',
+        welcome: 'مرحباً بعودتك',
         auth_login: 'تسجيل الدخول',
-        auth_signup: 'إنشاء حساب'
+        auth_signup: 'إنشاء حساب',
+        new_folder: 'مجلد جديد',
+        empty_files: 'لا توجد ملفات هنا',
+        delete: 'حذف',
+        rename: 'تغيير الاسم',
+        download: 'تحميل',
+        restore: 'استعادة',
+        items: 'عناصر'
     },
     fr: {
         brand: 'Khaznati',
@@ -18,10 +25,17 @@ const translations = {
         nav_trash: 'Corbeille',
         nav_settings: 'Paramètres',
         search_placeholder: 'Rechercher des fichiers...',
-        upload_cta: 'Ajouter un fichier',
-        welcome: 'Bienvenue sur Khaznati',
+        upload_cta: 'Téléverser',
+        welcome: 'Bon retour',
         auth_login: 'Connexion',
-        auth_signup: 'Inscription'
+        auth_signup: 'Inscription',
+        new_folder: 'Nouveau dossier',
+        empty_files: 'Aucun fichier trouvé',
+        delete: 'Supprimer',
+        rename: 'Renommer',
+        download: 'Télécharger',
+        restore: 'Restaurer',
+        items: 'éléments'
     }
 };
 

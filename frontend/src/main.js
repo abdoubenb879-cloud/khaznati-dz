@@ -3,26 +3,32 @@ import { App } from './App.js';
 import { AuthView } from './views/AuthView.js';
 import { DashboardView } from './views/DashboardView.js';
 import { Router } from './router.js';
+import { api } from './services/api.js';
 
 const appContainer = document.querySelector('#app');
 
-const renderView = (html) => {
+const renderView = async (htmlPromise) => {
   const container = document.getElementById('view-container');
   if (container) {
-    container.innerHTML = html;
+    container.innerHTML = await htmlPromise;
   }
 };
 
 const routes = {
-  '/': () => {
+  '/': async () => {
+    if (!api.currentUser) return (window.location.hash = '/auth/login');
     toggleLayout(true);
-    renderView(DashboardView.render());
+    await renderView(DashboardView.render());
+    DashboardView.loadItems();
   },
-  '/files': () => {
+  '/files': async () => {
+    if (!api.currentUser) return (window.location.hash = '/auth/login');
     toggleLayout(true);
-    renderView(DashboardView.render());
+    await renderView(DashboardView.render());
+    DashboardView.loadItems();
   },
-  '/trash': () => {
+  '/trash': async () => {
+    if (!api.currentUser) return (window.location.hash = '/auth/login');
     toggleLayout(true);
     renderView(`
       <div class="explorer">
@@ -33,18 +39,20 @@ const routes = {
       </div>
     `);
   },
-  '/settings': () => {
+  '/settings': async () => {
+    if (!api.currentUser) return (window.location.hash = '/auth/login');
     toggleLayout(true);
     renderView('<div class="explorer"><h2 class="text-gradient">Paramètres</h2></div>');
   },
   '/auth/:mode': (params) => {
+    if (api.currentUser) return (window.location.hash = '/');
     toggleLayout(false);
     appContainer.innerHTML = AuthView.render(params.mode);
     AuthView.initEventListeners(params.mode);
   }
 };
 
-function toggleLayout(show) {
+async function toggleLayout(show) {
   const hasLayout = !!document.querySelector('.app-layout');
   if (show && !hasLayout) {
     appContainer.innerHTML = App.render();
@@ -52,8 +60,11 @@ function toggleLayout(show) {
   }
 }
 
-// Initial Render
-const router = new Router(routes);
+// Global App Initialization
+(async () => {
+  await api.getMe(); // Check if logged in
+  const router = new Router(routes);
+})();
 
 // Sync active nav links
 window.addEventListener('hashchange', () => {

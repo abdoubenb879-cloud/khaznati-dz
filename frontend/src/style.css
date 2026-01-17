@@ -1,46 +1,46 @@
 :root {
-  /* Colors - Derived from Khaznati Logo */
-  --color-bg-darkest: #020617;
-  /* Near black navy */
-  --color-bg-darker: #0f172a;
-  /* Deep navy */
-  --color-bg-surface: rgba(30, 41, 59, 0.7);
+  /* Colors - Precisely Derived from Khaznati Logo */
+  --color-bg-darkest: #050a18;
+  /* Deepest navy */
+  --color-bg-darker: #0b1426;
+  /* Dark mid-navy */
+  --color-bg-surface: rgba(15, 23, 42, 0.7);
   /* Translucent surface */
 
-  --color-primary-light: #38bdf8;
-  /* Light blue */
-  --color-primary: #0ea5e9;
-  /* Mid blue/teal */
-  --color-primary-dark: #0369a1;
-  /* Deep blue/teal */
+  --color-primary-light: #468faf;
+  /* Soft teal blue */
+  --color-primary: #2c7da0;
+  /* Brand Teal/Blue */
+  --color-primary-dark: #01497c;
+  /* Deep brand blue */
 
-  --color-accent: #10b981;
-  /* Mint green */
-  --color-accent-soft: #34d399;
-  /* Softer mint */
+  --color-accent: #52b788;
+  /* Brand Mint Green */
+  --color-accent-soft: #74c69d;
+  /* Softer brand mint */
 
-  --color-text-white: #f8fafc;
+  --color-text-white: #f1f5f9;
   --color-text-muted: #94a3b8;
+  --color-error: #ef4444;
 
   /* Gradients */
-  --grad-primary: linear-gradient(135deg, var(--color-primary-light), var(--color-primary-dark));
+  --grad-primary: linear-gradient(135deg, var(--color-primary-light), var(--color-primary));
+  --grad-premium: linear-gradient(135deg, var(--color-primary), var(--color-accent));
 
-  /* Spacing */
+  /* Spacing & Radii */
   --space-xs: 0.25rem;
   --space-sm: 0.5rem;
   --space-md: 1rem;
   --space-lg: 1.5rem;
   --space-xl: 2rem;
-
-  /* Radii */
   --radius-sm: 0.5rem;
   --radius-md: 0.75rem;
-  --radius-lg: 1rem;
-  --radius-xl: 1.5rem;
+  --radius-lg: 1.25rem;
+  --radius-xl: 1.75rem;
 
-  /* Font Families */
-  --font-main: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --font-arabic: 'Noto Sans Arabic', sans-serif;
+  /* Fonts */
+  --font-main: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-arabic: 'Cairo', 'Noto Sans Arabic', sans-serif;
 }
 
 * {
@@ -130,7 +130,12 @@ body {
 .nav-item.active {
   background: var(--grad-primary);
   color: white;
-  box-shadow: 0 4px 15px rgba(14, 165, 233, 0.3);
+  box-shadow: 0 8px 16px rgba(44, 125, 160, 0.3);
+  transform: translateX(4px);
+}
+
+[dir="rtl"] .nav-item.active {
+  transform: translateX(-4px);
 }
 
 .main-content {
@@ -434,9 +439,10 @@ body {
 }
 
 .file-item:hover {
-  background: rgba(255, 255, 255, 0.08);
-  border-color: var(--color-primary);
-  transform: translateY(-2px);
+  background: rgba(255, 255, 255, 0.12);
+  border-color: var(--color-accent);
+  transform: translateY(-4px) scale(1.02);
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2);
 }
 
 .file-icon {
