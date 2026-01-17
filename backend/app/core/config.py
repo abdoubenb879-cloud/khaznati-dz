@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     resend_api_key: str = ""
     resend_from_email: str = "noreply@khaznati.dz"
     
+    # Email (SMTP Fallback)
+    smtp_email: str = ""
+    smtp_password: str = ""
+    
     # Session & Security
     session_secret: str = "session-secret-change-me"
     session_expire_minutes: int = 1440  # 24 hours
