@@ -1,204 +1,213 @@
 """
 Khaznati DZ - Authentication API Routes
 
-Endpoints for user registration, login, logout, and email verification.
+Endpoints for user registration, login, logout.
+Uses Supabase for user storage.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Depends, HTTPException, status, Request
+import secrets
 
-from app.core.database import get_db
-from app.core.security import create_csrf_token
 from app.core.config import settings
-from app.schemas.user import (
-    UserRegister,
-    UserLogin,
-    UserResponse,
-    AuthResponse,
-    MessageResponse,
-)
-from app.services.auth_service import AuthService
-from app.api.deps import get_current_user
-from app.models.user import User
+from app.services.auth_service import auth_service
+from app.core.security import create_csrf_token
 
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
+def get_current_user_id(request: Request) -> str:
+    """Get the current user ID from session."""
+    user_id = request.session.get("user_id")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="غير مسموح - يرجى تسجيل الدخول"  # Unauthorized - please login
+        )
+    return user_id
+
+
+def get_current_user(request: Request) -> dict:
+    """Get the current user from session."""
+    user_id = get_current_user_id(request)
+    user = auth_service.get_user_by_id(user_id)
+    if not user:
+        request.session.clear()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="جلسة غير صالحة"  # Invalid session
+        )
+    return user
+
+
 @router.post(
     "/register",
-    response_model=AuthResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Register a new user"
 )
-async def register(
-    data: UserRegister,
-    request: Request,
-    db: AsyncSession = Depends(get_db)
-):
+async def register(request: Request):
     """
     Register a new user account.
     
+    Body:
     - **email**: Valid email address (must be unique)
-    - **password**: At least 8 characters with letters and numbers
+    - **password**: At least 8 characters
     - **display_name**: Optional display name
     - **language**: Preferred language (ar, fr, en)
     """
-    auth_service = AuthService(db)
+    body = await request.json()
     
-    try:
-        user = await auth_service.create_user(data)
-    except ValueError as e:
+    email = body.get("email", "").strip().lower()
+    password = body.get("password", "")
+    display_name = body.get("display_name", "")
+    language = body.get("language", "ar")
+    
+    if not email or not password:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
+            detail="البريد الإلكتروني وكلمة المرور مطلوبان"
+        )
+    
+    if len(password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="كلمة المرور يجب أن تكون 8 أحرف على الأقل"
+        )
+    
+    user = auth_service.create_user(
+        email=email,
+        password=password,
+        display_name=display_name,
+        language=language
+    )
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="البريد الإلكتروني مستخدم بالفعل"  # Email already in use
         )
     
     # Set session
-    request.session["user_id"] = str(user.id)
+    user_id = user.get("telegram_id")
+    request.session["user_id"] = user_id
     request.session["csrf_token"] = create_csrf_token()
     
-    # TODO: Send verification email
-    # await send_verification_email(user.email, user.email_verification_token)
-    
-    return AuthResponse(
-        message="تم إنشاء الحساب بنجاح",  # Account created successfully
-        user=UserResponse(
-            id=user.id,
-            email=user.email,
-            display_name=user.display_name,
-            language=user.language,
-            email_verified=user.email_verified,
-            storage_quota=user.storage_quota,
-            storage_used=user.storage_used,
-            storage_remaining=user.storage_remaining,
-            storage_percentage=user.storage_percentage,
-            created_at=user.created_at,
-        )
-    )
+    return {
+        "message": "تم إنشاء الحساب بنجاح",  # Account created successfully
+        "user": {
+            "id": user_id,
+            "email": user.get("email"),
+            "name": user.get("name") or user.get("username"),
+        }
+    }
 
 
 @router.post(
     "/login",
-    response_model=AuthResponse,
     summary="Login to existing account"
 )
-async def login(
-    data: UserLogin,
-    request: Request,
-    db: AsyncSession = Depends(get_db)
-):
+async def login(request: Request):
     """
     Authenticate with email and password.
-    
-    - **email**: Registered email address
-    - **password**: Account password
-    - **remember_me**: Extend session to 30 days
     """
-    auth_service = AuthService(db)
+    body = await request.json()
     
-    user = await auth_service.authenticate(data.email, data.password)
+    email = body.get("email", "").strip().lower()
+    password = body.get("password", "")
+    
+    if not email or not password:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="البريد الإلكتروني وكلمة المرور مطلوبان"
+        )
+    
+    user = auth_service.authenticate(email, password)
     
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="البريد الإلكتروني أو كلمة المرور غير صحيحة",  # Invalid email or password
+            detail="البريد الإلكتروني أو كلمة المرور غير صحيحة"  # Invalid credentials
         )
     
     # Set session
-    request.session["user_id"] = str(user.id)
+    user_id = user.get("telegram_id")
+    request.session["user_id"] = user_id
     request.session["csrf_token"] = create_csrf_token()
     
-    # TODO: Handle remember_me with session expiry
-    
-    return AuthResponse(
-        message="تم تسجيل الدخول بنجاح",  # Logged in successfully
-        user=UserResponse(
-            id=user.id,
-            email=user.email,
-            display_name=user.display_name,
-            language=user.language,
-            email_verified=user.email_verified,
-            storage_quota=user.storage_quota,
-            storage_used=user.storage_used,
-            storage_remaining=user.storage_remaining,
-            storage_percentage=user.storage_percentage,
-            created_at=user.created_at,
-        )
-    )
+    return {
+        "message": "تم تسجيل الدخول بنجاح",  # Logged in successfully
+        "user": {
+            "id": user_id,
+            "email": user.get("email"),
+            "name": user.get("name") or user.get("username"),
+        }
+    }
 
 
 @router.post(
     "/logout",
-    response_model=MessageResponse,
     summary="Logout current user"
 )
-async def logout(
-    request: Request,
-    current_user: User = Depends(get_current_user)
-):
-    """
-    End the current session and logout.
-    """
+async def logout(request: Request):
+    """End the current session and logout."""
     request.session.clear()
     
-    return MessageResponse(
-        message="تم تسجيل الخروج بنجاح",  # Logged out successfully
-        success=True
-    )
+    return {
+        "message": "تم تسجيل الخروج بنجاح",  # Logged out successfully
+        "success": True
+    }
 
 
 @router.get(
     "/me",
-    response_model=UserResponse,
     summary="Get current user info"
 )
-async def get_me(
-    current_user: User = Depends(get_current_user)
-):
-    """
-    Get the currently authenticated user's information.
-    """
-    return UserResponse(
-        id=current_user.id,
-        email=current_user.email,
-        display_name=current_user.display_name,
-        language=current_user.language,
-        email_verified=current_user.email_verified,
-        storage_quota=current_user.storage_quota,
-        storage_used=current_user.storage_used,
-        storage_remaining=current_user.storage_remaining,
-        storage_percentage=current_user.storage_percentage,
-        created_at=current_user.created_at,
-    )
+async def get_me(request: Request):
+    """Get the currently authenticated user's information."""
+    user = get_current_user(request)
+    
+    return {
+        "id": user.get("telegram_id"),
+        "email": user.get("email"),
+        "name": user.get("name") or user.get("username"),
+        "is_premium": user.get("is_premium", False),
+    }
 
 
 @router.post(
-    "/verify-email/{token}",
-    response_model=MessageResponse,
-    summary="Verify email address"
+    "/change-password",
+    summary="Change password"
 )
-async def verify_email(
-    token: str,
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Verify email address using the token sent via email.
-    """
-    auth_service = AuthService(db)
+async def change_password(request: Request):
+    """Change the current user's password."""
+    user = get_current_user(request)
+    body = await request.json()
     
-    user = await auth_service.verify_email(token)
+    current_password = body.get("current_password", "")
+    new_password = body.get("new_password", "")
     
-    if not user:
+    if not current_password or not new_password:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="رابط التحقق غير صالح أو منتهي الصلاحية",  # Invalid or expired verification link
+            detail="كلمة المرور الحالية والجديدة مطلوبتان"
         )
     
-    return MessageResponse(
-        message="تم تأكيد البريد الإلكتروني بنجاح",  # Email verified successfully
-        success=True
-    )
+    if len(new_password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="كلمة المرور الجديدة يجب أن تكون 8 أحرف على الأقل"
+        )
+    
+    user_id = user.get("telegram_id")
+    success = auth_service.change_password(user_id, current_password, new_password)
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="كلمة المرور الحالية غير صحيحة"  # Current password incorrect
+        )
+    
+    return {"message": "تم تغيير كلمة المرور بنجاح", "success": True}
 
 
 @router.get(
@@ -206,10 +215,7 @@ async def verify_email(
     summary="Get CSRF token for forms"
 )
 async def get_csrf_token(request: Request):
-    """
-    Get a CSRF token for form submissions.
-    Call this before making POST/PUT/DELETE requests.
-    """
+    """Get a CSRF token for form submissions."""
     csrf_token = request.session.get("csrf_token")
     
     if not csrf_token:

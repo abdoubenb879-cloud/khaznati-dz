@@ -1,38 +1,34 @@
 # Khaznati DZ Backend Dependencies
+# Uses Telegram for storage, Supabase for database
 
 # Core Framework
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
 python-multipart>=0.0.9
 
-# Database
-sqlalchemy>=2.0.25
-asyncpg>=0.29.0
-alembic>=1.13.1
-
 # Authentication & Security
-passlib[argon2]>=1.7.4
+passlib>=1.7.4
 python-jose[cryptography]>=3.3.0
 itsdangerous>=2.1.2
 
 # Session Management
 starlette-session>=0.4.3
 
-# Storage (S3)
-boto3>=1.34.0
-aioboto3>=12.3.0
+# Telegram (File Storage)
+pyrogram>=2.0.0
+tgcrypto>=1.2.5
 
 # Validation & Serialization
 pydantic>=2.6.0
 pydantic-settings>=2.1.0
 email-validator>=2.1.0
 
-# HTTP Client (for Supabase API)
+# HTTP Client
 httpx>=0.26.0
 aiohttp>=3.9.0
 
-# Email
-aiosmtplib>=3.0.1
+# Email (Resend)
+resend>=0.7.0
 
 # Utilities
 python-dotenv>=1.0.0
@@ -41,9 +37,5 @@ orjson>=3.9.0
 # Rate Limiting
 slowapi>=0.1.9
 
-# Telegram (for file storage)
-pyrogram>=2.0.0
-tgcrypto>=1.2.5
-
-# Resend (for email)
-resend>=0.7.0
+# File compression
+aiofiles>=23.0.0

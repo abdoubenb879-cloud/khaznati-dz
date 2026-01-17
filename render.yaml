@@ -1,20 +1,18 @@
-# Render Blueprint - Khaznati DZ
-# This file tells Render how to deploy your application
-# Uses: Supabase (database) + Telegram Bot (file storage)
+# Render Blueprint - Khaznati DZ (Single Web Service)
+# This file tells Render how to deploy your application as a single unit
+# Both Backend and Frontend are served from this one service
 
 services:
-  # ============================================
-  # BACKEND - FastAPI Python Application
-  # ============================================
   - type: web
-    name: khaznati-backend
+    name: khaznati-dz
     runtime: python
-    region: frankfurt  # Choose: oregon, ohio, virginia, frankfurt, singapore
-    plan: free  # Options: free, starter, standard, pro
-    rootDir: backend
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /health
+    region: frankfurt
+    plan: free
+    # Root directory is empty because we're at the root of the project
+    buildCommand: cd backend && pip install -r requirements.txt && cd ../frontend && npm install && npm run build
+    # We use uvicorn to start the FastAPI app
+    startCommand: cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
     envVars:
       # Application Settings
       - key: APP_NAME
@@ -24,13 +22,15 @@ services:
       - key: DEBUG
         value: false
       - key: SECRET_KEY
-        sync: false  # Enter your existing SECRET_KEY
+        generateValue: true
+      - key: SESSION_SECRET
+        generateValue: true
       
       # Supabase Database
       - key: SUPABASE_URL
-        sync: false  # Enter your Supabase URL
+        sync: false  # Enter your Supabase URL in Render Dashboard
       - key: SUPABASE_KEY
-        sync: false  # Enter your Supabase anon/service key
+        sync: false  # Enter your Supabase anon/service key in Render Dashboard
       
       # Telegram Bot (for file storage)
       - key: API_ID
@@ -41,47 +41,11 @@ services:
         sync: false  # Your Telegram Bot Token
       - key: STORAGE_CHANNEL_ID
         sync: false  # Your Telegram Channel ID for storage
-      - key: CHUNK_SIZE
-        sync: false  # Chunk size for uploads
       
-      # Email (Resend)
-      - key: RESEND_API_KEY
-        sync: false  # Your Resend API key
-      - key: RESEND_FROM_EMAIL
-        sync: false  # Your from email address
-      
-      # CORS
+      # CORS (Self-referencing for single service)
       - key: ALLOWED_ORIGINS
-        sync: false  # Your frontend URL
+        value: https://khaznati-dz.onrender.com
       
-      # Optional settings
-      - key: MULTI_USER
-        sync: false
-
-  # ============================================
-  # FRONTEND - Vite Static Site
-  # ============================================
-  - type: web
-    name: khaznati-frontend
-    runtime: static
-    rootDir: frontend
-    buildCommand: npm install && npm run build
-    staticPublishPath: dist
-    headers:
-      - path: /*
-        name: X-Frame-Options
-        value: DENY
-      - path: /*
-        name: X-Content-Type-Options
-        value: nosniff
-    routes:
-      # Single Page App - redirect all routes to index.html
-      - type: rewrite
-        source: /*
-        destination: /index.html
-    envVars:
-      - key: VITE_API_URL
-        sync: false  # Set this to your backend URL
-
-# NOTE: We're NOT creating a database here because you're using Supabase
-# Your Supabase database is already set up externally
+      # Python Version
+      - key: PYTHON_VERSION
+        value: 3.11.7

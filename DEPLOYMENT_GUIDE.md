@@ -126,127 +126,68 @@ git push -u origin main
 3. Choose **Sign up with GitHub** (easiest option!)
 4. Authorize Render to access your GitHub
 
-### Step 2.2: Deploy Using Blueprint (Easiest Method!)
+### Step 2.2: Deploy as a Single Web Service
 
-We've created a `render.yaml` file that tells Render exactly how to deploy your app.
+We are deploying the entire application (Backend + Frontend) as a single **Web Service**. This is simpler and more efficient for the free tier.
 
 1. Go to your Render Dashboard
-2. Click **New** → **Blueprint**
+2. Click **New** → **Web Service**
 3. Connect your GitHub repository (`khaznati-dz`)
-4. Render will read the `render.yaml` file automatically
-5. Click **Apply** to deploy everything at once!
-
-This creates:
-- ✅ Backend (FastAPI API)
-- ✅ Frontend (Static site)
-- ✅ Database (PostgreSQL)
-
-### Step 2.3: Alternative - Manual Deployment
-
-If you prefer to deploy each service separately:
-
-#### Deploy the Database First
-
-1. Go to Render Dashboard → **New** → **PostgreSQL**
-2. Configure:
-   - **Name**: `khaznati-db`
-   - **Database**: `khaznati`
-   - **User**: `khaznati_user`
-   - **Region**: Frankfurt (EU) or your nearest region
-   - **Plan**: Free
-3. Click **Create Database**
-4. Wait for it to be created, then copy the **Internal Database URL**
-
-#### Deploy the Backend
-
-1. Go to Render Dashboard → **New** → **Web Service**
-2. Connect your GitHub repository
-3. Configure:
+4. Configure:
 
 | Setting | Value |
 |---------|-------|
-| **Name** | `khaznati-backend` |
+| **Name** | `khaznati-dz` |
 | **Region** | Frankfurt (EU) |
 | **Branch** | `main` |
-| **Root Directory** | `backend` |
+| **Root Directory** | (leave empty - root of project) |
 | **Runtime** | `Python 3` |
-| **Build Command** | `pip install -r requirements.txt` |
-| **Start Command** | `uvicorn app.main:app --host 0.0.0.0 --port $PORT` |
-
-4. Click **Create Web Service**
-5. Wait for deployment (this takes 2-5 minutes)
-6. Copy your backend URL (e.g., `https://khaznati-backend.onrender.com`)
-
-#### Deploy the Frontend
-
-1. Go to Render Dashboard → **New** → **Static Site**
-2. Connect your GitHub repository
-3. Configure:
-
-| Setting | Value |
-|---------|-------|
-| **Name** | `khaznati-frontend` |
-| **Branch** | `main` |
-| **Root Directory** | `frontend` |
-| **Build Command** | `npm install && npm run build` |
-| **Publish Directory** | `dist` |
-
-4. Click **Create Static Site**
+| **Build Command** | `cd backend && pip install -r requirements.txt && cd ../frontend && npm install && npm run build` |
+| **Start Command** | `cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT` |
 
 ---
 
 ## Part 3: Configure Environment Variables
 
-Environment variables are secret settings your app needs to run (like passwords and API keys).
+Environment variables are secret settings your app needs to run.
 
-### Step 3.1: Backend Environment Variables
+### Step 3.1: Required Variables
 
-1. Go to your **khaznati-backend** service on Render
+1. Go to your **khaznati-dz** service on Render
 2. Click **Environment** in the left sidebar
 3. Add these variables:
 
 | Key | Value | Notes |
 |-----|-------|-------|
-| `DATABASE_URL` | (copy from PostgreSQL service) | Connection string |
-| `SECRET_KEY` | (click "Generate") | Auto-generated |
-| `SESSION_SECRET` | (click "Generate") | Auto-generated |
-| `CSRF_SECRET` | (click "Generate") | Auto-generated |
-| `ALLOWED_ORIGINS` | `https://khaznati-frontend.onrender.com` | Your frontend URL |
-| `APP_ENV` | `production` | Required |
-| `DEBUG` | `false` | For production |
-
-**For file storage (S3-compatible):**
-| Key | Value |
-|-----|-------|
-| `STORAGE_BACKEND` | `s3` |
-| `S3_ENDPOINT_URL` | Your S3 endpoint |
-| `S3_ACCESS_KEY_ID` | Your access key |
-| `S3_SECRET_ACCESS_KEY` | Your secret key |
-| `S3_BUCKET_NAME` | Your bucket name |
-| `S3_REGION` | `auto` |
-
-**For email:**
-| Key | Value |
-|-----|-------|
-| `SMTP_HOST` | Your SMTP server |
-| `SMTP_PORT` | `587` |
-| `SMTP_USER` | Your email |
-| `SMTP_PASSWORD` | Your email password |
+| **Supabase (Database)** | | |
+| `SUPABASE_URL` | `https://xxxx.supabase.co` | From Supabase Settings |
+| `SUPABASE_KEY` | `your-anon-key` | From Supabase Settings |
+| **Telegram (Storage)** | | |
+| `API_ID` | `1234567` | From my.telegram.org |
+| `API_HASH` | `abcdef...` | From my.telegram.org |
+| `BOT_TOKEN` | `123:ABC...` | From @BotFather |
+| `STORAGE_CHANNEL_ID` | `-100...` | ID of your private channel |
+| **Application** | | |
+| `SECRET_KEY` | (click "Generate") | Session encryption |
+| `SESSION_SECRET` | (click "Generate") | Auth sessions |
+| `ALLOWED_ORIGINS` | `https://khaznati-dz.onrender.com` | Your service URL |
+| `APP_ENV` | `production` | Set to production |
 
 4. Click **Save Changes**
 5. Your service will automatically redeploy
 
-### Step 3.2: Frontend Environment Variables
+---
 
-1. Go to your **khaznati-frontend** service on Render
-2. Click **Environment**
-3. Add:
+## Part 4: Verify Everything Works
 
-| Key | Value |
-|-----|-------|
-| `VITE_API_URL` | `https://khaznati-backend.onrender.com` |
+### Test the Backend Health
+1. Go to: `https://khaznati-dz.onrender.com/api/health`
+2. You should see `{"status": "healthy", "storage": "connected"}`
 
-4. Click **Save Changes**
+### Test the Website
+1. Go to: `https://khaznati-dz.onrender.com`
+2. You should see your Khaznati login page!
+
 
 ---
 

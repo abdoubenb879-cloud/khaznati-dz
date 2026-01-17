@@ -2,28 +2,18 @@
 Khaznati DZ - File API Routes
 
 Endpoints for file management, uploading, downloading, and sharing.
+Uses Telegram for storage and Supabase for metadata.
 """
 
-from typing import List, Optional
-from uuid import UUID
+import os
+import tempfile
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, HTTPException, status, Request, UploadFile, File, Form
+from fastapi.responses import FileResponse
 
-from app.core.database import get_db
-from app.api.deps import get_current_user, get_verified_user, verify_csrf
-from app.models.user import User
-from app.schemas.file import (
-    FilePublic,
-    UploadInitRequest,
-    UploadInitResponse,
-    UploadCompleteRequest,
-    DownloadResponse,
-    FileListParams,
-    FileUpdate
-)
-from app.schemas.common import PaginatedResponse, MessageResponse, PaginationMeta
-from app.services.file_service import FileService
+from app.services.file_service import file_service
+from app.api.routes.auth import get_current_user, get_current_user_id
 
 
 router = APIRouter(prefix="/files", tags=["Files"])
@@ -31,218 +21,268 @@ router = APIRouter(prefix="/files", tags=["Files"])
 
 @router.get(
     "",
-    response_model=PaginatedResponse[FilePublic],
     summary="List files"
 )
 async def list_files(
-    folder_id: Optional[UUID] = Query(None, description="Filter by folder"),
-    search: Optional[str] = Query(None, description="Search by name"),
-    mime_type: Optional[str] = Query(None, description="Filter by MIME type"),
-    page: int = Query(1, ge=1, description="Page number"),
-    limit: int = Query(50, ge=1, le=100, description="Items per page"),
-    sort_by: str = Query("created_at", description="Sort field"),
-    sort_order: str = Query("desc", pattern="^(asc|desc)$"),
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    request: Request,
+    folder_id: Optional[str] = None
 ):
-    """
-    List user's files with filtering and pagination.
-    """
-    file_service = FileService(db)
+    """List user's files in a folder (or root)."""
+    user = get_current_user(request)
+    user_id = user.get("telegram_id")
     
-    files, total = await file_service.list_files(
-        user_id=current_user.id,
-        folder_id=folder_id,
-        search=search,
-        mime_type=mime_type,
-        include_trashed=False,
-        page=page,
-        limit=limit,
-        sort_by=sort_by,
-        sort_order=sort_order
-    )
+    files = file_service.list_files(user_id, folder_id)
     
-    # Convert to schema
-    files_public = [FilePublic.from_model(f) for f in files]
-    
-    return PaginatedResponse(
-        data=files_public,
-        pagination=PaginationMeta.create(page, limit, total)
-    )
+    return {
+        "files": files,
+        "folder_id": folder_id
+    }
 
 
 @router.post(
-    "/upload/init",
-    response_model=UploadInitResponse,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(verify_csrf)],
-    summary="Initialize file upload"
+    "/upload",
+    summary="Upload a file"
 )
-async def init_upload(
-    data: UploadInitRequest,
-    current_user: User = Depends(get_verified_user),
-    db: AsyncSession = Depends(get_db)
+async def upload_file(
+    request: Request,
+    file: UploadFile = File(...),
+    folder_id: Optional[str] = Form(None)
 ):
     """
-    Initialize a file upload.
-    Returns presigned URL(s) for uploading directly to storage.
-    Handles both simple and multipart (chunked) uploads.
+    Upload a file to storage.
+    
+    - **file**: The file to upload
+    - **folder_id**: Optional folder to upload to (root if not specified)
     """
-    file_service = FileService(db)
+    user = get_current_user(request)
+    user_id = user.get("telegram_id")
+    
+    # Save uploaded file temporarily
+    with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{file.filename}") as tmp:
+        content = await file.read()
+        tmp.write(content)
+        tmp_path = tmp.name
     
     try:
-        result = await file_service.init_upload(
-            user=current_user,
-            name=data.name,
-            size_bytes=data.size_bytes,
-            folder_id=data.folder_id,
-            mime_type=data.mime_type,
-            checksum=data.checksum
+        result = file_service.upload_file(
+            user_id=user_id,
+            file_path=tmp_path,
+            filename=file.filename,
+            folder_id=folder_id
         )
-        return result
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
-        )
-
-
-@router.post(
-    "/upload/complete",
-    response_model=FilePublic,
-    dependencies=[Depends(verify_csrf)],
-    summary="Complete file upload"
-)
-async def complete_upload(
-    data: UploadCompleteRequest,
-    current_user: User = Depends(get_verified_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Confirm that file upload is complete.
-    For multipart uploads, assembles the chunks.
-    """
-    file_service = FileService(db)
-    
-    try:
-        # Convert Pydantic models to dictionaries for the service
-        parts_dicts = [p.model_dump() for p in data.parts] if data.parts else None
         
-        file = await file_service.complete_upload(
-            file_id=data.file_id,
-            user_id=current_user.id,
-            upload_id=data.upload_id,
-            parts=parts_dicts
-        )
-        return FilePublic.from_model(file)
-    except ValueError as e:
+        return {
+            "message": "تم رفع الملف بنجاح",  # File uploaded successfully
+            "file": result
+        }
+    except Exception as e:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"فشل رفع الملف: {str(e)}"  # Upload failed
         )
-
-
-@router.get(
-    "/{file_id}/download",
-    response_model=DownloadResponse,
-    summary="Get download URL"
-)
-async def get_download_url(
-    file_id: UUID,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Get a temporary presigned URL to download a file.
-    """
-    file_service = FileService(db)
-    
-    try:
-        result = await file_service.get_download_url(file_id, current_user.id)
-        return result
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e)
-        )
+    finally:
+        # Clean up temp file
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 @router.get(
     "/{file_id}",
-    response_model=FilePublic,
     summary="Get file details"
 )
-async def get_file(
-    file_id: UUID,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
+async def get_file(file_id: str, request: Request):
     """Get metadata for a single file."""
-    file_service = FileService(db)
+    user = get_current_user(request)
+    user_id = user.get("telegram_id")
     
-    file = await file_service.get_file_by_id(file_id, current_user.id)
+    file = file_service.get_file(file_id)
+    
     if not file:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="الملف غير موجود"  # File not found
         )
     
-    return FilePublic.from_model(file)
+    # Check ownership
+    if file.get("user_id") != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="غير مسموح"  # Not allowed
+        )
+    
+    return file
+
+
+@router.get(
+    "/{file_id}/download",
+    summary="Download a file"
+)
+async def download_file(file_id: str, request: Request):
+    """Download a file."""
+    user = get_current_user(request)
+    user_id = user.get("telegram_id")
+    
+    file = file_service.get_file(file_id)
+    
+    if not file:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="الملف غير موجود"
+        )
+    
+    # Check ownership
+    if file.get("user_id") != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="غير مسموح"
+        )
+    
+    if file.get("is_folder"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="لا يمكن تحميل مجلد"  # Cannot download folder
+        )
+    
+    # Download to temp file
+    with tempfile.NamedTemporaryFile(delete=False, suffix=f"_{file.get('filename')}") as tmp:
+        output_path = tmp.name
+    
+    try:
+        file_service.download_file(file_id, output_path)
+        
+        return FileResponse(
+            output_path,
+            filename=file.get("filename"),
+            media_type="application/octet-stream",
+            background=None  # Will be deleted after response
+        )
+    except Exception as e:
+        if os.path.exists(output_path):
+            os.remove(output_path)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"فشل تحميل الملف: {str(e)}"  # Download failed
+        )
 
 
 @router.patch(
     "/{file_id}",
-    response_model=FilePublic,
-    dependencies=[Depends(verify_csrf)],
-    summary="Update file"
+    summary="Rename file"
 )
-async def update_file(
-    file_id: UUID,
-    data: FileUpdate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Update file name or location (move)."""
-    file_service = FileService(db)
+async def rename_file(file_id: str, request: Request):
+    """Rename a file."""
+    user = get_current_user(request)
+    user_id = user.get("telegram_id")
+    body = await request.json()
     
-    try:
-        file = None
-        if data.name:
-            file = await file_service.rename_file(file_id, current_user.id, data.name)
-        
-        if data.folder_id is not None:  # explicit move, allow None for root
-            # If we already updated name, use the returned file's ID (though it's the same)
-            file = await file_service.move_file(file_id, current_user.id, data.folder_id)
-        
-        # If nothing updated but file exists
-        if not file:
-             file = await file_service.get_file_by_id(file_id, current_user.id)
-             
-        return FilePublic.from_model(file)
-    except ValueError as e:
-        status_code = status.HTTP_404_NOT_FOUND if "غير موجود" in str(e) else status.HTTP_400_BAD_REQUEST
-        raise HTTPException(status_code=status_code, detail=str(e))
+    new_name = body.get("name", "").strip()
+    
+    if not new_name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="الاسم مطلوب"  # Name required
+        )
+    
+    success = file_service.rename_file(file_id, user_id, new_name)
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="الملف غير موجود"
+        )
+    
+    return {"message": "تم تغيير الاسم بنجاح", "success": True}
+
+
+@router.post(
+    "/{file_id}/move",
+    summary="Move file to folder"
+)
+async def move_file(file_id: str, request: Request):
+    """Move a file to a different folder."""
+    user = get_current_user(request)
+    user_id = user.get("telegram_id")
+    body = await request.json()
+    
+    new_folder_id = body.get("folder_id")  # None for root
+    
+    success = file_service.move_file(file_id, user_id, new_folder_id)
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="الملف غير موجود"
+        )
+    
+    return {"message": "تم نقل الملف بنجاح", "success": True}
 
 
 @router.delete(
     "/{file_id}",
-    response_model=MessageResponse,
-    dependencies=[Depends(verify_csrf)],
-    summary="Move file to trash"
+    summary="Delete file (move to trash)"
 )
-async def delete_file(
-    file_id: UUID,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Soft delete a file (move to trash)."""
-    file_service = FileService(db)
+async def delete_file(file_id: str, request: Request, permanent: bool = False):
+    """Delete a file. By default moves to trash, use permanent=true for hard delete."""
+    user = get_current_user(request)
+    user_id = user.get("telegram_id")
     
-    try:
-        await file_service.trash_file(file_id, current_user.id)
-        return MessageResponse(message="تم نقل الملف إلى سلة المحذوفات")
-    except ValueError as e:
+    success = file_service.delete_file(file_id, user_id, permanent=permanent)
+    
+    if not success:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=str(e)
+            detail="الملف غير موجود"
         )
+    
+    return {"message": "تم حذف الملف بنجاح", "success": True}
+
+
+@router.post(
+    "/{file_id}/restore",
+    summary="Restore file from trash"
+)
+async def restore_file(file_id: str, request: Request):
+    """Restore a file from trash."""
+    user = get_current_user(request)
+    user_id = user.get("telegram_id")
+    
+    success = file_service.restore_file(file_id, user_id)
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="الملف غير موجود"
+        )
+    
+    return {"message": "تم استعادة الملف بنجاح", "success": True}
+
+
+@router.get(
+    "/{file_id}/share",
+    summary="Create share link"
+)
+async def create_share_link(file_id: str, request: Request):
+    """Create a public share link for a file."""
+    user = get_current_user(request)
+    user_id = user.get("telegram_id")
+    
+    # Verify ownership
+    file = file_service.get_file(file_id)
+    if not file or file.get("user_id") != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="الملف غير موجود"
+        )
+    
+    token = file_service.create_share_link(file_id)
+    
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="فشل إنشاء رابط المشاركة"
+        )
+    
+    return {
+        "token": token,
+        "url": f"/share/{token}"
+    }

@@ -1,185 +1,134 @@
 """
 Khaznati DZ - Authentication Service
 
-Business logic for user authentication.
+Business logic for user authentication using Supabase.
 """
 
-from datetime import datetime, timedelta
 from typing import Optional
-from uuid import UUID
+from datetime import datetime
+import hashlib
+import secrets
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from app.core.supabase_client import db
+from app.core.config import settings
+from app.core.security import hash_password, verify_password
 
-from app.models.user import User
-from app.schemas.user import UserRegister
-from app.core.security import (
-    hash_password,
-    verify_password,
-    create_verification_token,
-    verify_verification_token,
-)
+
+def create_verification_token(email: str) -> str:
+    """Create an email verification token."""
+    return secrets.token_urlsafe(32)
 
 
 class AuthService:
     """Service class for authentication operations."""
     
-    def __init__(self, db: AsyncSession):
+    def __init__(self):
         self.db = db
     
-    async def get_user_by_email(self, email: str) -> Optional[User]:
-        """
-        Find a user by email address.
-        
-        Args:
-            email: User's email
-            
-        Returns:
-            User if found, None otherwise
-        """
-        result = await self.db.execute(
-            select(User).where(User.email == email.lower())
-        )
-        return result.scalar_one_or_none()
+    def get_user_by_email(self, email: str) -> Optional[dict]:
+        """Find a user by email address."""
+        return self.db.get_user_by_email(email.lower())
     
-    async def get_user_by_id(self, user_id: UUID) -> Optional[User]:
-        """
-        Find a user by ID.
-        
-        Args:
-            user_id: User's UUID
-            
-        Returns:
-            User if found, None otherwise
-        """
-        result = await self.db.execute(
-            select(User).where(User.id == user_id)
-        )
-        return result.scalar_one_or_none()
+    def get_user_by_id(self, user_id: str) -> Optional[dict]:
+        """Find a user by ID."""
+        return self.db.get_user_by_id(user_id)
     
-    async def create_user(self, data: UserRegister) -> User:
+    def create_user(self, email: str, password: str, display_name: str = None, language: str = "ar") -> Optional[dict]:
         """
         Create a new user account.
         
-        Args:
-            data: Registration data
-            
         Returns:
-            Created User instance
-            
-        Raises:
-            ValueError: If email already exists
+            User dict if created, None if email exists
         """
         # Check if email exists
-        existing = await self.get_user_by_email(data.email)
+        existing = self.get_user_by_email(email)
         if existing:
-            raise ValueError("البريد الإلكتروني مستخدم بالفعل")
+            return None
         
-        # Create verification token
-        verification_token = create_verification_token(data.email)
+        # Create password hash
+        password_hash = hash_password(password)
         
         # Create user
-        user = User(
-            email=data.email.lower(),
-            password_hash=hash_password(data.password),
-            display_name=data.display_name,
-            language=data.language,
-            email_verification_token=verification_token,
-            email_verified=False,
-        )
+        name = display_name or email.split('@')[0]
+        user_id = self.db.create_user(name, email.lower(), password_hash)
         
-        self.db.add(user)
-        await self.db.flush()
-        await self.db.refresh(user)
-        
-        return user
+        if user_id:
+            return self.get_user_by_id(user_id)
+        return None
     
-    async def authenticate(self, email: str, password: str) -> Optional[User]:
+    def authenticate(self, email: str, password: str) -> Optional[dict]:
         """
         Authenticate a user with email and password.
         
-        Args:
-            email: User's email
-            password: Plain text password
-            
         Returns:
-            User if credentials valid, None otherwise
+            User dict if credentials valid, None otherwise
         """
-        user = await self.get_user_by_email(email)
+        user = self.get_user_by_email(email)
         if not user:
             return None
         
-        if not verify_password(password, user.password_hash):
+        stored_hash = user.get('password_hash', '')
+        if not verify_password(password, stored_hash):
             return None
-        
-        # Update last login
-        user.last_login_at = datetime.utcnow()
-        await self.db.flush()
         
         return user
     
-    async def verify_email(self, token: str) -> Optional[User]:
-        """
-        Verify user's email with token.
-        
-        Args:
-            token: Verification token from email
-            
-        Returns:
-            User if verified, None if invalid token
-        """
-        email = verify_verification_token(token)
-        if not email:
-            return None
-        
-        user = await self.get_user_by_email(email)
-        if not user:
-            return None
-        
-        user.email_verified = True
-        user.email_verification_token = None
-        await self.db.flush()
-        
-        return user
-    
-    async def change_password(
-        self,
-        user: User,
-        current_password: str,
-        new_password: str
-    ) -> bool:
+    def change_password(self, user_id: str, current_password: str, new_password: str) -> bool:
         """
         Change user's password.
         
-        Args:
-            user: User instance
-            current_password: Current password for verification
-            new_password: New password to set
-            
         Returns:
             True if successful, False if current password wrong
         """
-        if not verify_password(current_password, user.password_hash):
+        user = self.get_user_by_id(user_id)
+        if not user:
             return False
         
-        user.password_hash = hash_password(new_password)
-        await self.db.flush()
+        if not verify_password(current_password, user.get('password_hash', '')):
+            return False
         
-        return True
+        new_hash = hash_password(new_password)
+        return self.db.update_password(user_id, new_hash)
     
-    async def update_language(self, user: User, language: str) -> User:
+    def request_password_reset(self, email: str) -> Optional[str]:
         """
-        Update user's preferred language.
+        Request a password reset.
         
-        Args:
-            user: User instance
-            language: New language code
-            
         Returns:
-            Updated user
+            Reset token if user exists, None otherwise
         """
-        user.language = language
-        await self.db.flush()
-        await self.db.refresh(user)
+        user = self.get_user_by_email(email)
+        if not user:
+            return None
         
-        return user
+        token = secrets.token_urlsafe(32)
+        user_id = user.get('telegram_id')
+        self.db.set_reset_token(user_id, token)
+        return token
+    
+    def reset_password(self, token: str, new_password: str) -> bool:
+        """
+        Reset password using token.
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        user = self.db.get_user_by_reset_token(token)
+        if not user:
+            return False
+        
+        user_id = user.get('telegram_id')
+        new_hash = hash_password(new_password)
+        
+        if self.db.update_password(user_id, new_hash):
+            self.db.clear_reset_token(user_id)
+            return True
+        return False
+    
+    def update_profile(self, user_id: str, **kwargs) -> bool:
+        """Update user profile fields."""
+        return self.db.update_user(user_id, **kwargs)
+
+
+# Convenience instance
+auth_service = AuthService()

@@ -2,167 +2,136 @@
 Khaznati DZ - Folder API Routes
 
 Endpoints for folder management and navigation.
+Uses Supabase for metadata storage.
 """
 
-from typing import List, Optional, Any
-from uuid import UUID
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query
-from sqlalchemy.ext.asyncio import AsyncSession
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, status, Request
 
-from app.core.database import get_db
-from app.api.deps import get_current_user, verify_csrf
-from app.models.user import User
-from app.models.folder import Folder
-from app.schemas.file import FilePublic
-from app.schemas.common import PaginatedResponse, MessageResponse, PaginationMeta
-from app.services.folder_service import FolderService
+from app.services.folder_service import folder_service
+from app.services.file_service import file_service
+from app.api.routes.auth import get_current_user
 
 
 router = APIRouter(prefix="/folders", tags=["Folders"])
 
 
-class FolderCreate(BaseModel):
-    name: str
-    parent_id: Optional[UUID] = None
-
-
-class FolderUpdate(BaseModel):
-    name: Optional[str] = None
-    parent_id: Optional[UUID] = None
-
-
-class FolderPublic(BaseModel):
-    id: UUID
-    name: str
-    parent_id: Optional[UUID]
-    created_at: Any
-    
-    class Config:
-        from_attributes = True
-
-
-class FolderContentResponse(BaseModel):
-    folders: List[FolderPublic]
-    files: List[FilePublic]
-    breadcrumbs: List[dict]
-    current_folder_id: Optional[UUID]
-
-
 @router.get(
     "",
-    response_model=PaginatedResponse[FolderPublic],
     summary="List folders"
 )
 async def list_folders(
-    parent_id: Optional[UUID] = Query(None, description="Parent folder ID"),
-    page: int = Query(1, ge=1),
-    limit: int = Query(50, ge=1, le=100),
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    request: Request,
+    parent_id: Optional[str] = None
 ):
     """List folders within a parent folder."""
-    folder_service = FolderService(db)
+    user = get_current_user(request)
+    user_id = user.get("telegram_id")
     
-    folders, total = await folder_service.list_folders(
-        user_id=current_user.id,
-        parent_id=parent_id,
-        page=page,
-        limit=limit
-    )
+    folders = folder_service.list_folders(user_id, parent_id)
     
-    return PaginatedResponse(
-        data=folders,
-        pagination=PaginationMeta.create(page, limit, total)
-    )
+    return {
+        "folders": folders,
+        "parent_id": parent_id
+    }
 
 
 @router.get(
     "/content",
-    response_model=FolderContentResponse,
     summary="Get folder contents (browse)"
 )
 async def get_folder_content(
-    folder_id: Optional[UUID] = Query(None, description="Folder ID"),
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    request: Request,
+    folder_id: Optional[str] = None
 ):
     """
     Get full contents of a folder (folders + files) and breadcrumbs.
     This is the main endpoint for the file explorer UI.
     """
-    folder_service = FolderService(db)
+    user = get_current_user(request)
+    user_id = user.get("telegram_id")
     
-    # Check folder existence if provided
+    # Get files and folders
+    files = file_service.list_files(user_id, folder_id)
+    folders = [f for f in files if f.get("is_folder")]
+    regular_files = [f for f in files if not f.get("is_folder")]
+    
+    # Get breadcrumbs
+    breadcrumbs = []
     if folder_id:
-        folder = await folder_service.get_folder_by_id(folder_id, current_user.id)
-        if not folder:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="المجلد غير موجود"
-            )
-            
-    content = await folder_service.get_folder_contents(folder_id, current_user.id)
-    
-    # Convert files to schema
-    files_public = [FilePublic.from_model(f) for f in content["files"]]
+        breadcrumbs = folder_service.get_breadcrumbs(folder_id)
     
     return {
-        "folders": content["folders"],
-        "files": files_public,
-        "breadcrumbs": content["breadcrumbs"],
-        "current_folder_id": content["current_folder_id"]
+        "folders": folders,
+        "files": regular_files,
+        "breadcrumbs": breadcrumbs,
+        "current_folder_id": folder_id
     }
+
+
+@router.get(
+    "/all",
+    summary="Get all folders (for move dialog)"
+)
+async def get_all_folders(request: Request):
+    """Get all folders for the user (used in move file dialog)."""
+    user = get_current_user(request)
+    user_id = user.get("telegram_id")
+    
+    folders = folder_service.get_all_folders(user_id)
+    
+    return {"folders": folders}
 
 
 @router.post(
     "",
-    response_model=FolderPublic,
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(verify_csrf)],
     summary="Create folder"
 )
-async def create_folder(
-    data: FolderCreate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
+async def create_folder(request: Request):
     """Create a new folder."""
-    folder_service = FolderService(db)
+    user = get_current_user(request)
+    user_id = user.get("telegram_id")
+    body = await request.json()
     
-    try:
-        folder = await folder_service.create_folder(
-            user_id=current_user.id,
-            name=data.name,
-            parent_id=data.parent_id
-        )
-        return folder
-    except ValueError as e:
+    name = body.get("name", "").strip()
+    parent_id = body.get("parent_id")
+    
+    if not name:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
+            detail="اسم المجلد مطلوب"  # Folder name required
         )
+    
+    folder = folder_service.create_folder(user_id, name, parent_id)
+    
+    if not folder:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="فشل إنشاء المجلد"  # Failed to create folder
+        )
+    
+    return {
+        "message": "تم إنشاء المجلد بنجاح",
+        "folder": folder
+    }
 
 
 @router.get(
     "/{folder_id}",
-    response_model=FolderPublic,
     summary="Get folder details"
 )
-async def get_folder(
-    folder_id: UUID,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
+async def get_folder(folder_id: str, request: Request):
     """Get metadata for a single folder."""
-    folder_service = FolderService(db)
+    user = get_current_user(request)
+    user_id = user.get("telegram_id")
     
-    folder = await folder_service.get_folder_by_id(folder_id, current_user.id)
+    folder = folder_service.get_folder(folder_id)
+    
     if not folder:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="المجلد غير موجود"
+            detail="المجلد غير موجود"  # Folder not found
         )
     
     return folder
@@ -170,63 +139,75 @@ async def get_folder(
 
 @router.patch(
     "/{folder_id}",
-    response_model=FolderPublic,
-    dependencies=[Depends(verify_csrf)],
-    summary="Update folder"
+    summary="Rename folder"
 )
-async def update_folder(
-    folder_id: UUID,
-    data: FolderUpdate,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """Update folder name or move it."""
-    folder_service = FolderService(db)
+async def rename_folder(folder_id: str, request: Request):
+    """Rename a folder."""
+    user = get_current_user(request)
+    user_id = user.get("telegram_id")
+    body = await request.json()
     
-    try:
-        folder = None
-        if data.name:
-            folder = await folder_service.rename_folder(
-                folder_id, current_user.id, data.name
-            )
-        
-        if data.parent_id is not None:
-             # Explicit parent_id (allow None for root)
-             folder = await folder_service.move_folder(
-                 folder_id, current_user.id, data.parent_id
-             )
-             
-        if not folder:
-             folder = await folder_service.get_folder_by_id(folder_id, current_user.id)
-             
-        return folder
-    except ValueError as e:
+    new_name = body.get("name", "").strip()
+    
+    if not new_name:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
+            detail="الاسم مطلوب"
         )
+    
+    success = folder_service.rename_folder(folder_id, user_id, new_name)
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="المجلد غير موجود"
+        )
+    
+    return {"message": "تم تغيير الاسم بنجاح", "success": True}
+
+
+@router.post(
+    "/{folder_id}/move",
+    summary="Move folder"
+)
+async def move_folder(folder_id: str, request: Request):
+    """Move a folder to a different parent."""
+    user = get_current_user(request)
+    user_id = user.get("telegram_id")
+    body = await request.json()
+    
+    new_parent_id = body.get("parent_id")  # None for root
+    
+    success = folder_service.move_folder(folder_id, user_id, new_parent_id)
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="لا يمكن نقل المجلد"  # Cannot move folder
+        )
+    
+    return {"message": "تم نقل المجلد بنجاح", "success": True}
 
 
 @router.delete(
     "/{folder_id}",
-    response_model=MessageResponse,
-    dependencies=[Depends(verify_csrf)],
     summary="Delete folder"
 )
 async def delete_folder(
-    folder_id: UUID,
-    recursive: bool = Query(False, description="Delete non-empty folder recursively"),
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    folder_id: str, 
+    request: Request,
+    permanent: bool = False
 ):
-    """Delete a folder. Must be empty unless recursive=True."""
-    folder_service = FolderService(db)
+    """Delete a folder."""
+    user = get_current_user(request)
+    user_id = user.get("telegram_id")
     
-    try:
-        await folder_service.delete_folder(folder_id, current_user.id, recursive)
-        return MessageResponse(message="تم حذف المجلد بنجاح")
-    except ValueError as e:
+    success = folder_service.delete_folder(folder_id, user_id, permanent=permanent)
+    
+    if not success:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e)
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="المجلد غير موجود"
         )
+    
+    return {"message": "تم حذف المجلد بنجاح", "success": True}

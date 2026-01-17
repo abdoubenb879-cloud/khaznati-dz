@@ -2,11 +2,11 @@
 Khaznati DZ - Configuration Module
 
 Central configuration management using Pydantic Settings.
-All environment variables are loaded and validated here.
+Uses Telegram Bot for storage and Supabase for database.
 """
 
 from functools import lru_cache
-from typing import List
+from typing import List, Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -26,25 +26,23 @@ class Settings(BaseSettings):
     debug: bool = True
     secret_key: str = "change-me-in-production"
     
-    # Database
-    database_url: str = "postgresql://localhost/khaznati"
+    # Supabase Database
+    supabase_url: str = ""
+    supabase_key: str = ""
     
-    # Storage (S3)
-    storage_backend: str = "s3"
-    s3_endpoint_url: str = ""
-    s3_access_key_id: str = ""
-    s3_secret_access_key: str = ""
-    s3_bucket_name: str = "khaznati-files"
-    s3_region: str = "auto"
+    # Telegram Bot (File Storage)
+    api_id: int = 0
+    api_hash: str = ""
+    bot_token: str = ""
+    storage_channel_id: int = 0
+    chunk_size: int = 20 * 1024 * 1024  # 20MB default
     
-    # Email
-    email_backend: str = "smtp"
-    smtp_host: str = ""
-    smtp_port: int = 587
-    smtp_user: str = ""
-    smtp_password: str = ""
-    email_from: str = "noreply@khaznati.dz"
-    email_from_name: str = "Khaznati DZ"
+    # Multi-user mode
+    multi_user: bool = True
+    
+    # Email (Resend)
+    resend_api_key: str = ""
+    resend_from_email: str = "noreply@khaznati.dz"
     
     # Session & Security
     session_secret: str = "session-secret-change-me"
@@ -58,7 +56,6 @@ class Settings(BaseSettings):
     
     # File Upload
     max_upload_size_mb: int = 500
-    chunk_size_mb: int = 5
     allowed_extensions: str = "*"
     
     # Localization
@@ -88,7 +85,7 @@ class Settings(BaseSettings):
     @property
     def chunk_size_bytes(self) -> int:
         """Chunk size in bytes."""
-        return self.chunk_size_mb * 1024 * 1024
+        return self.chunk_size
 
 
 @lru_cache

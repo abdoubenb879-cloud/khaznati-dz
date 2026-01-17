@@ -5,18 +5,18 @@ FastAPI application entry point.
 خزنتي - تطبيق التخزين السحابي الجزائري
 """
 
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.core.config import settings
-from app.core.database import create_tables
 from app.api import api_router
+from app.services.telegram_service import telegram_storage
 
 
 @asynccontextmanager
@@ -24,13 +24,27 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     """Application lifespan events."""
     # Startup
     print("🚀 Starting Khaznati DZ...")
-    await create_tables()
-    print("✅ Database tables ready")
+    
+    # Initialize and start Telegram Storage
+    try:
+        print("🤖 Initializing Telegram Storage...")
+        telegram_storage.connect()
+        print("✅ Telegram Storage ready")
+    except Exception as e:
+        print(f"❌ Failed to start Telegram Storage: {e}")
+        # We don't exit, maybe it's a temporary connection issue
+    
+    print("✅ Application started and ready")
     
     yield
     
     # Shutdown
     print("👋 Shutting down Khaznati DZ...")
+    try:
+        telegram_storage.stop()
+        print("✅ Telegram Storage stopped")
+    except:
+        pass
 
 
 # Create FastAPI application
@@ -103,28 +117,55 @@ async def health_check():
         "status": "healthy",
         "app": settings.app_name,
         "version": "1.0.0",
-    }
-
-
-# Root redirect (for API-only mode)
-@app.get("/", tags=["System"])
-async def root():
-    """Root endpoint - API info."""
-    return {
-        "name": "Khaznati DZ API",
-        "name_ar": "خزنتي",
-        "version": "1.0.0",
-        "docs": "/docs" if settings.debug else None,
-        "message": "مرحباً بك في خزنتي!",  # Welcome to Khaznati!
+        "storage": "connected" if telegram_storage._connected else "disconnected"
     }
 
 
 # =============================================================================
-# Static Files (for frontend - will be mounted later)
+# Frontend Serving (Single Service Mode)
 # =============================================================================
 
-# Uncomment when frontend is ready:
-# app.mount("/static", StaticFiles(directory="static"), name="static")
+# Path to the frontend build directory
+# Since we start in 'backend', frontend is in '../frontend/dist'
+frontend_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "frontend", "dist"))
+
+if os.path.exists(frontend_path):
+    from fastapi.staticfiles import StaticFiles
+    from fastapi.responses import FileResponse
+    
+    # Mount assets (js, css, etc.)
+    app.mount("/assets", StaticFiles(directory=os.path.join(frontend_path, "assets")), name="assets")
+    
+    # Catch-all route to serve index.html for SPA (React)
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        # Exclude /api routes
+        if full_path.startswith("api/"):
+            return JSONResponse(
+                status_code=status.HTTP_404_NOT_FOUND,
+                content={"detail": "Not Found"}
+            )
+        
+        # Check if requested path is a file in the frontend dir
+        file_request = os.path.join(frontend_path, full_path)
+        if os.path.isfile(file_request):
+            return FileResponse(file_request)
+            
+        # Otherwise serve index.html (SPA routing)
+        return FileResponse(os.path.join(frontend_path, "index.html"))
+
+else:
+    # Fallback for API-only mode
+    @app.get("/", tags=["System"])
+    async def root():
+        """Root endpoint - API info."""
+        return {
+            "name": "Khaznati DZ API",
+            "name_ar": "خزنتي",
+            "version": "1.0.0",
+            "docs": "/api/docs" if settings.debug else None,
+            "message": "Front-end distribution not found. API is running.",
+        }
 
 
 if __name__ == "__main__":

@@ -1,326 +1,143 @@
 """
 Khaznati DZ - Folder Service
 
-Business logic for folder operations.
+Business logic for folder operations using Supabase.
 """
 
-from datetime import datetime, timezone
-from typing import Optional, List, Tuple
-from uuid import UUID
+from typing import Optional, List, Dict
 
-from sqlalchemy import select, func, delete
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
-
-from app.models.folder import Folder
-from app.models.file import File
+from app.core.supabase_client import db
 
 
 class FolderService:
     """Service class for folder operations."""
     
-    def __init__(self, db: AsyncSession):
+    def __init__(self):
         self.db = db
     
-    async def get_folder_by_id(
-        self,
-        folder_id: UUID,
-        user_id: UUID
-    ) -> Optional[Folder]:
-        """Get a folder by ID for a specific user."""
-        result = await self.db.execute(
-            select(Folder).where(
-                Folder.id == folder_id,
-                Folder.user_id == user_id
-            )
-        )
-        return result.scalar_one_or_none()
-    
-    async def list_folders(
-        self,
-        user_id: UUID,
-        parent_id: Optional[UUID] = None,
-        page: int = 1,
-        limit: int = 50
-    ) -> Tuple[List[Folder], int]:
-        """
-        List folders for a user.
-        
-        Args:
-            user_id: Owner UUID
-            parent_id: Parent folder ID (None for root level)
-            page: Page number
-            limit: Items per page
-            
-        Returns:
-            Tuple of (folders list, total count)
-        """
-        # Base query
-        query = select(Folder).where(Folder.user_id == user_id)
-        count_query = select(func.count(Folder.id)).where(Folder.user_id == user_id)
-        
-        # Parent filter
-        if parent_id is None:
-            query = query.where(Folder.parent_id.is_(None))
-            count_query = count_query.where(Folder.parent_id.is_(None))
-        else:
-            query = query.where(Folder.parent_id == parent_id)
-            count_query = count_query.where(Folder.parent_id == parent_id)
-        
-        # Get total count
-        total_result = await self.db.execute(count_query)
-        total = total_result.scalar() or 0
-        
-        # Sorting and pagination
-        query = query.order_by(Folder.name.asc())
-        offset = (page - 1) * limit
-        query = query.offset(offset).limit(limit)
-        
-        result = await self.db.execute(query)
-        folders = list(result.scalars().all())
-        
-        return folders, total
-    
-    async def create_folder(
-        self,
-        user_id: UUID,
-        name: str,
-        parent_id: Optional[UUID] = None
-    ) -> Folder:
+    def create_folder(self, user_id: str, name: str, parent_id: str = None) -> Optional[Dict]:
         """
         Create a new folder.
         
         Args:
-            user_id: Owner UUID
+            user_id: User's ID
             name: Folder name
-            parent_id: Parent folder ID
+            parent_id: Parent folder ID (None for root)
             
         Returns:
-            Created folder
+            Folder metadata dict if successful
         """
-        # Validate parent if provided
-        if parent_id:
-            parent = await self.get_folder_by_id(parent_id, user_id)
-            if not parent:
-                raise ValueError("المجلد الأصل غير موجود")  # Parent folder not found
-        
-        # Check for duplicate name in same location
-        existing = await self.db.execute(
-            select(Folder).where(
-                Folder.user_id == user_id,
-                Folder.parent_id == parent_id,
-                Folder.name == name
-            )
-        )
-        if existing.scalar_one_or_none():
-            raise ValueError("يوجد مجلد بهذا الاسم بالفعل")  # Folder with this name exists
-        
-        folder = Folder(
-            user_id=user_id,
-            parent_id=parent_id,
-            name=name
-        )
-        
-        self.db.add(folder)
-        await self.db.flush()
-        await self.db.refresh(folder)
-        
-        return folder
+        folder_id = self.db.create_folder(user_id, name, parent_id)
+        if folder_id:
+            return self.get_folder(folder_id)
+        return None
     
-    async def rename_folder(
-        self,
-        folder_id: UUID,
-        user_id: UUID,
-        new_name: str
-    ) -> Folder:
+    def get_folder(self, folder_id: str) -> Optional[Dict]:
+        """Get folder metadata."""
+        file = self.db.get_file(folder_id)
+        if file and file.get("is_folder"):
+            return {
+                "id": file["id"],
+                "name": file["filename"],
+                "parent_id": file.get("parent_id"),
+                "created_at": file.get("created_at"),
+            }
+        return None
+    
+    def get_or_create_folder(self, user_id: str, name: str, parent_id: str = None) -> Optional[str]:
+        """Find or create a folder by name."""
+        return self.db.get_or_create_folder(user_id, name, parent_id)
+    
+    def list_folders(self, user_id: str, parent_id: str = None) -> List[Dict]:
+        """List all folders in a parent folder (or root)."""
+        all_items = self.db.list_files(user_id, parent_id)
+        folders = [item for item in all_items if item.get("is_folder")]
+        
+        return [{
+            "id": f["id"],
+            "name": f["filename"],
+            "parent_id": f.get("parent_id"),
+            "created_at": f.get("created_at"),
+        } for f in folders]
+    
+    def get_all_folders(self, user_id: str) -> List[Dict]:
+        """Get all folders for a user (for move dialog)."""
+        return self.db.get_all_folders(user_id)
+    
+    def rename_folder(self, folder_id: str, user_id: str, new_name: str) -> bool:
         """Rename a folder."""
-        folder = await self.get_folder_by_id(folder_id, user_id)
-        if not folder:
-            raise ValueError("المجلد غير موجود")  # Folder not found
-        
-        # Check for duplicate name
-        existing = await self.db.execute(
-            select(Folder).where(
-                Folder.user_id == user_id,
-                Folder.parent_id == folder.parent_id,
-                Folder.name == new_name,
-                Folder.id != folder_id
-            )
-        )
-        if existing.scalar_one_or_none():
-            raise ValueError("يوجد مجلد بهذا الاسم بالفعل")
-        
-        folder.name = new_name
-        await self.db.flush()
-        await self.db.refresh(folder)
-        
-        return folder
+        try:
+            self.db.rename_file(folder_id, user_id, new_name)
+            return True
+        except:
+            return False
     
-    async def move_folder(
-        self,
-        folder_id: UUID,
-        user_id: UUID,
-        target_parent_id: Optional[UUID]
-    ) -> Folder:
+    def move_folder(self, folder_id: str, user_id: str, new_parent_id: str = None) -> bool:
         """Move a folder to a different parent."""
-        folder = await self.get_folder_by_id(folder_id, user_id)
-        if not folder:
-            raise ValueError("المجلد غير موجود")
-        
-        # Can't move to itself
-        if target_parent_id == folder_id:
-            raise ValueError("لا يمكن نقل المجلد إلى نفسه")
-        
-        # Validate target parent
-        if target_parent_id:
-            target = await self.get_folder_by_id(target_parent_id, user_id)
-            if not target:
-                raise ValueError("المجلد الهدف غير موجود")
+        try:
+            # Prevent moving folder into itself or its children
+            if folder_id == new_parent_id:
+                return False
             
-            # Check for circular reference
-            if await self._is_descendant(folder_id, target_parent_id, user_id):
-                raise ValueError("لا يمكن نقل المجلد إلى مجلد فرعي منه")
-        
-        # Check for duplicate name in target
-        existing = await self.db.execute(
-            select(Folder).where(
-                Folder.user_id == user_id,
-                Folder.parent_id == target_parent_id,
-                Folder.name == folder.name,
-                Folder.id != folder_id
-            )
-        )
-        if existing.scalar_one_or_none():
-            raise ValueError("يوجد مجلد بهذا الاسم في الوجهة")
-        
-        folder.parent_id = target_parent_id
-        await self.db.flush()
-        await self.db.refresh(folder)
-        
-        return folder
-    
-    async def _is_descendant(
-        self,
-        ancestor_id: UUID,
-        folder_id: UUID,
-        user_id: UUID
-    ) -> bool:
-        """Check if folder_id is a descendant of ancestor_id."""
-        current_id = folder_id
-        visited = set()
-        
-        while current_id and current_id not in visited:
-            if current_id == ancestor_id:
-                return True
+            # Check if new_parent is a child of folder_id
+            if new_parent_id:
+                breadcrumbs = self.db.get_breadcrumbs(new_parent_id)
+                for crumb in breadcrumbs:
+                    if crumb["id"] == folder_id:
+                        return False
             
-            visited.add(current_id)
-            folder = await self.get_folder_by_id(current_id, user_id)
-            current_id = folder.parent_id if folder else None
-        
-        return False
+            self.db.move_file(folder_id, user_id, new_parent_id)
+            return True
+        except:
+            return False
     
-    async def delete_folder(
-        self,
-        folder_id: UUID,
-        user_id: UUID,
-        recursive: bool = False
-    ) -> None:
+    def delete_folder(self, folder_id: str, user_id: str, permanent: bool = False) -> bool:
         """
         Delete a folder.
         
         Args:
-            folder_id: Folder UUID
-            user_id: Owner UUID
-            recursive: If True, delete children. If False, fail if not empty.
+            folder_id: Folder's ID
+            user_id: User's ID
+            permanent: If True, permanently delete. If False, move to trash.
         """
-        folder = await self.get_folder_by_id(folder_id, user_id)
-        if not folder:
-            raise ValueError("المجلد غير موجود")
-        
-        # Check if folder has contents
-        has_children = await self.db.execute(
-            select(func.count()).select_from(Folder).where(
-                Folder.parent_id == folder_id
-            )
-        )
-        has_files = await self.db.execute(
-            select(func.count()).select_from(File).where(
-                File.folder_id == folder_id,
-                File.is_trashed == False
-            )
-        )
-        
-        children_count = has_children.scalar() or 0
-        files_count = has_files.scalar() or 0
-        
-        if (children_count > 0 or files_count > 0) and not recursive:
-            raise ValueError("المجلد ليس فارغاً")  # Folder is not empty
-        
-        # Delete folder (cascade will handle children if recursive)
-        await self.db.delete(folder)
-        await self.db.flush()
-    
-    async def get_breadcrumbs(
-        self,
-        folder_id: UUID,
-        user_id: UUID
-    ) -> List[dict]:
-        """
-        Get breadcrumb path to a folder.
-        
-        Returns:
-            List of {id, name} from root to folder
-        """
-        breadcrumbs = []
-        current_id = folder_id
-        visited = set()
-        
-        while current_id and current_id not in visited:
-            visited.add(current_id)
-            folder = await self.get_folder_by_id(current_id, user_id)
-            if folder:
-                breadcrumbs.insert(0, {
-                    "id": folder.id,
-                    "name": folder.name
-                })
-                current_id = folder.parent_id
+        try:
+            if permanent:
+                # Recursively delete contents first
+                contents = self.db.list_files(user_id, folder_id)
+                for item in contents:
+                    if item.get("is_folder"):
+                        self.delete_folder(item["id"], user_id, permanent=True)
+                    else:
+                        self.db.permanent_delete(item["id"], user_id)
+                
+                # Delete the folder itself
+                self.db.permanent_delete(folder_id, user_id)
             else:
-                break
-        
-        return breadcrumbs
+                # Soft delete
+                self.db.soft_delete_file(folder_id, user_id)
+            
+            return True
+        except Exception as e:
+            print(f"[FOLDER] Delete failed: {e}")
+            return False
     
-    async def get_folder_contents(
-        self,
-        folder_id: Optional[UUID],
-        user_id: UUID
-    ) -> dict:
-        """
-        Get full contents of a folder including files and subfolders.
-        
-        Returns:
-            Dict with folders, files, and breadcrumbs
-        """
-        # Get folders
-        folders, _ = await self.list_folders(user_id, folder_id, page=1, limit=1000)
-        
-        # Get files
-        from app.services.file_service import FileService
-        file_service = FileService(self.db)
-        files, _ = await file_service.list_files(
-            user_id,
-            folder_id=folder_id,
-            page=1,
-            limit=1000
-        )
-        
-        # Get breadcrumbs
-        breadcrumbs = []
-        if folder_id:
-            breadcrumbs = await self.get_breadcrumbs(folder_id, user_id)
-        
-        return {
-            "folders": folders,
-            "files": files,
-            "breadcrumbs": breadcrumbs,
-            "current_folder_id": folder_id
-        }
+    def restore_folder(self, folder_id: str, user_id: str) -> bool:
+        """Restore a folder from trash."""
+        try:
+            self.db.restore_file(folder_id, user_id)
+            return True
+        except:
+            return False
+    
+    def get_breadcrumbs(self, folder_id: str) -> List[Dict]:
+        """Get breadcrumb navigation for a folder."""
+        return self.db.get_breadcrumbs(folder_id)
+    
+    def get_folder_path(self, folder_id: str) -> str:
+        """Get the full path of a folder as a string."""
+        breadcrumbs = self.get_breadcrumbs(folder_id)
+        return "/" + "/".join([b["name"] for b in breadcrumbs])
+
+
+# Convenience instance
+folder_service = FolderService()

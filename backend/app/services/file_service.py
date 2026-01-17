@@ -1,443 +1,292 @@
 """
 Khaznati DZ - File Service
 
-Business logic for file operations.
+Business logic for file operations using Telegram storage and Supabase.
 """
 
-from datetime import datetime, timedelta, timezone
-from typing import Optional, List, Tuple
-from uuid import UUID, uuid4
+import os
+import tempfile
+import secrets
+from typing import Optional, List, Dict
+from datetime import datetime
 
-from sqlalchemy import select, func, or_, and_, delete
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
-
-from app.models.file import File
-from app.models.folder import Folder
-from app.models.user import User
-from app.services.storage_service import storage_service
+from app.core.supabase_client import db
 from app.core.config import settings
+from app.services.telegram_service import telegram_storage
+
+
+class Chunker:
+    """Utility class for splitting files into chunks."""
+    
+    def __init__(self, chunk_size: int = None):
+        self.chunk_size = chunk_size or settings.chunk_size
+    
+    def split_file(self, file_path: str, output_dir: str) -> List[str]:
+        """Split a file into chunks and return list of chunk paths."""
+        chunk_paths = []
+        chunk_index = 0
+        
+        with open(file_path, 'rb') as f:
+            while True:
+                data = f.read(self.chunk_size)
+                if not data:
+                    break
+                
+                chunk_path = os.path.join(output_dir, f"chunk_{chunk_index}")
+                with open(chunk_path, 'wb') as chunk_file:
+                    chunk_file.write(data)
+                
+                chunk_paths.append(chunk_path)
+                chunk_index += 1
+        
+        return chunk_paths
+    
+    def join_chunks(self, chunk_paths: List[str], output_path: str) -> str:
+        """Join chunks back into a single file."""
+        with open(output_path, 'wb') as output_file:
+            for chunk_path in sorted(chunk_paths):
+                with open(chunk_path, 'rb') as chunk_file:
+                    output_file.write(chunk_file.read())
+        return output_path
 
 
 class FileService:
     """Service class for file operations."""
     
-    def __init__(self, db: AsyncSession):
+    def __init__(self):
         self.db = db
-        self.storage = storage_service
+        self.storage = telegram_storage
+        self.chunker = Chunker()
     
-    async def get_file_by_id(
-        self,
-        file_id: UUID,
-        user_id: UUID,
-        include_trashed: bool = False
-    ) -> Optional[File]:
+    def list_files(self, user_id: str, folder_id: str = None) -> List[Dict]:
+        """List files in a folder (or root if folder_id is None)."""
+        files = self.db.list_files(user_id, folder_id)
+        
+        # Format response
+        result = []
+        for f in files:
+            result.append({
+                "id": f["id"],
+                "name": f["filename"],
+                "size": f.get("total_size", 0),
+                "is_folder": f.get("is_folder", False),
+                "parent_id": f.get("parent_id"),
+                "created_at": f.get("created_at"),
+                "share_token": f.get("share_token"),
+            })
+        return result
+    
+    def get_file(self, file_id: str) -> Optional[Dict]:
+        """Get file metadata."""
+        return self.db.get_file(file_id)
+    
+    def upload_file(
+        self, 
+        user_id: str, 
+        file_path: str, 
+        filename: str, 
+        folder_id: str = None,
+        progress_callback=None
+    ) -> Optional[Dict]:
         """
-        Get a file by ID for a specific user.
+        Upload a file to Telegram storage.
         
         Args:
-            file_id: File UUID
-            user_id: Owner's UUID
-            include_trashed: Include files in trash
+            user_id: User's ID
+            file_path: Path to the local file
+            filename: Original filename
+            folder_id: Parent folder ID (None for root)
+            progress_callback: Optional progress callback
             
         Returns:
-            File if found and owned by user, None otherwise
+            File metadata dict if successful
         """
-        query = select(File).where(
-            File.id == file_id,
-            File.user_id == user_id
-        )
-        
-        if not include_trashed:
-            query = query.where(File.is_trashed == False)
-        
-        result = await self.db.execute(query)
-        return result.scalar_one_or_none()
+        try:
+            file_size = os.path.getsize(file_path)
+            
+            # Determine number of chunks needed
+            chunk_count = (file_size + settings.chunk_size - 1) // settings.chunk_size
+            
+            # Create file record in database
+            file_id = self.db.add_file(
+                user_id=user_id,
+                filename=filename,
+                total_size=file_size,
+                chunk_count=chunk_count,
+                parent_id=folder_id
+            )
+            
+            if not file_id:
+                raise Exception("Failed to create file record")
+            
+            # Create temp directory for chunks
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Split file into chunks
+                chunk_paths = self.chunker.split_file(file_path, temp_dir)
+                
+                # Upload chunks to Telegram
+                messages = self.storage.upload_chunks(chunk_paths)
+                
+                # Record chunk metadata
+                for idx, msg in enumerate(messages):
+                    chunk_size = os.path.getsize(chunk_paths[idx])
+                    self.db.add_chunk(
+                        file_id=file_id,
+                        chunk_index=idx,
+                        message_id=msg.id,
+                        chunk_size=chunk_size
+                    )
+            
+            return self.get_file(file_id)
+            
+        except Exception as e:
+            print(f"[FILE] Upload failed: {e}")
+            raise
     
-    async def list_files(
-        self,
-        user_id: UUID,
-        folder_id: Optional[UUID] = None,
-        search: Optional[str] = None,
-        mime_type: Optional[str] = None,
-        include_trashed: bool = False,
-        page: int = 1,
-        limit: int = 50,
-        sort_by: str = "created_at",
-        sort_order: str = "desc"
-    ) -> Tuple[List[File], int]:
+    def download_file(
+        self, 
+        file_id: str, 
+        output_path: str,
+        progress_callback=None
+    ) -> Optional[str]:
         """
-        List files for a user with filtering and pagination.
-        
-        Returns:
-            Tuple of (files list, total count)
-        """
-        # Base query
-        query = select(File).where(File.user_id == user_id)
-        count_query = select(func.count(File.id)).where(File.user_id == user_id)
-        
-        # Folder filter
-        if folder_id is not None:
-            query = query.where(File.folder_id == folder_id)
-            count_query = count_query.where(File.folder_id == folder_id)
-        else:
-            # Root level files (no folder)
-            query = query.where(File.folder_id.is_(None))
-            count_query = count_query.where(File.folder_id.is_(None))
-        
-        # Trash filter
-        if not include_trashed:
-            query = query.where(File.is_trashed == False)
-            count_query = count_query.where(File.is_trashed == False)
-        else:
-            # Only trashed files
-            query = query.where(File.is_trashed == True)
-            count_query = count_query.where(File.is_trashed == True)
-        
-        # Search filter
-        if search:
-            search_filter = File.name.ilike(f"%{search}%")
-            query = query.where(search_filter)
-            count_query = count_query.where(search_filter)
-        
-        # MIME type filter
-        if mime_type:
-            mime_filter = File.mime_type.startswith(mime_type)
-            query = query.where(mime_filter)
-            count_query = count_query.where(mime_filter)
-        
-        # Get total count
-        total_result = await self.db.execute(count_query)
-        total = total_result.scalar() or 0
-        
-        # Sorting
-        sort_column = getattr(File, sort_by, File.created_at)
-        if sort_order == "desc":
-            query = query.order_by(sort_column.desc())
-        else:
-            query = query.order_by(sort_column.asc())
-        
-        # Pagination
-        offset = (page - 1) * limit
-        query = query.offset(offset).limit(limit)
-        
-        result = await self.db.execute(query)
-        files = list(result.scalars().all())
-        
-        return files, total
-    
-    async def init_upload(
-        self,
-        user: User,
-        name: str,
-        size_bytes: int,
-        folder_id: Optional[UUID] = None,
-        mime_type: Optional[str] = None,
-        checksum: Optional[str] = None
-    ) -> dict:
-        """
-        Initialize a file upload.
+        Download a file from Telegram storage.
         
         Args:
-            user: Owner user
-            name: File name
-            size_bytes: File size
-            folder_id: Target folder
-            mime_type: MIME type
-            checksum: SHA-256 checksum
+            file_id: File's ID
+            output_path: Path to save the file
+            progress_callback: Optional progress callback
             
         Returns:
-            Upload initialization data with presigned URL(s)
+            Output path if successful
         """
-        # Check quota
-        if user.storage_quota >= 0:
-            if user.storage_used + size_bytes > user.storage_quota:
-                raise ValueError("تجاوزت سعة التخزين المتاحة")  # Storage quota exceeded
-        
-        # Validate folder if provided
-        if folder_id:
-            folder = await self.db.execute(
-                select(Folder).where(
-                    Folder.id == folder_id,
-                    Folder.user_id == user.id
-                )
-            )
-            if not folder.scalar_one_or_none():
-                raise ValueError("المجلد غير موجود")  # Folder not found
-        
-        # Create file record
-        file_id = uuid4()
-        storage_key = self.storage.generate_storage_key(user.id, file_id, name)
-        
-        file = File(
-            id=file_id,
-            user_id=user.id,
-            folder_id=folder_id,
-            name=name,
-            size_bytes=size_bytes,
-            mime_type=mime_type or "application/octet-stream",
-            storage_key=storage_key,
-            checksum=checksum,
-            is_trashed=False,
-        )
-        
-        self.db.add(file)
-        await self.db.flush()
-        
-        # Determine upload strategy based on size
-        chunk_size = settings.chunk_size_bytes
-        expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
-        
-        if size_bytes <= chunk_size:
-            # Simple upload for small files
-            presigned_url = await self.storage.generate_upload_url(
-                storage_key,
-                content_type=mime_type or "application/octet-stream",
-                expires_in=3600
-            )
+        try:
+            # Get file metadata
+            file_meta = self.db.get_file(file_id)
+            if not file_meta:
+                raise Exception("File not found")
             
-            return {
-                "file_id": file_id,
-                "upload_id": None,
-                "presigned_url": presigned_url,
-                "parts": None,
-                "expires_at": expires_at
-            }
-        else:
-            # Multipart upload for large files
-            upload_id = await self.storage.initiate_multipart_upload(
-                storage_key,
-                content_type=mime_type or "application/octet-stream"
-            )
+            if file_meta.get("is_folder"):
+                raise Exception("Cannot download a folder")
             
-            parts = await self.storage.generate_part_upload_urls(
-                storage_key,
-                upload_id,
-                size_bytes,
-                part_size=chunk_size,
-                expires_in=3600
-            )
+            # Get chunks
+            chunks = self.db.get_chunks(file_id)
+            if not chunks:
+                raise Exception("No chunks found for file")
             
-            return {
-                "file_id": file_id,
-                "upload_id": upload_id,
-                "presigned_url": None,
-                "parts": parts,
-                "expires_at": expires_at
-            }
+            # Extract message IDs
+            message_ids = [c["message_id"] for c in sorted(chunks, key=lambda x: x["chunk_index"])]
+            
+            # Download chunks
+            with tempfile.TemporaryDirectory() as temp_dir:
+                chunk_paths = self.storage.download_chunks(message_ids, temp_dir)
+                
+                # Filter out None values
+                valid_chunks = [p for p in chunk_paths if p is not None]
+                
+                if len(valid_chunks) != len(message_ids):
+                    raise Exception("Some chunks failed to download")
+                
+                # Join chunks
+                self.chunker.join_chunks(valid_chunks, output_path)
+            
+            return output_path
+            
+        except Exception as e:
+            print(f"[FILE] Download failed: {e}")
+            raise
     
-    async def complete_upload(
-        self,
-        file_id: UUID,
-        user_id: UUID,
-        upload_id: Optional[str] = None,
-        parts: Optional[List[dict]] = None
-    ) -> File:
-        """
-        Mark an upload as complete.
-        
-        Args:
-            file_id: File UUID
-            user_id: Owner UUID
-            upload_id: Multipart upload ID (if applicable)
-            parts: Completed parts with ETags (if multipart)
-            
-        Returns:
-            Updated File
-        """
-        file = await self.get_file_by_id(file_id, user_id)
-        if not file:
-            raise ValueError("الملف غير موجود")  # File not found
-        
-        # Complete multipart upload if applicable
-        if upload_id and parts:
-            await self.storage.complete_multipart_upload(
-                file.storage_key,
-                upload_id,
-                parts
-            )
-        
-        # Update user storage
-        user = await self.db.execute(
-            select(User).where(User.id == user_id)
-        )
-        user = user.scalar_one()
-        user.storage_used += file.size_bytes
-        
-        await self.db.flush()
-        await self.db.refresh(file)
-        
-        return file
-    
-    async def get_download_url(
-        self,
-        file_id: UUID,
-        user_id: UUID
-    ) -> dict:
-        """
-        Generate a download URL for a file.
-        
-        Returns:
-            Dict with download_url, expires_at, filename
-        """
-        file = await self.get_file_by_id(file_id, user_id)
-        if not file:
-            raise ValueError("الملف غير موجود")  # File not found
-        
-        expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
-        download_url = await self.storage.generate_download_url(
-            file.storage_key,
-            file.name,
-            expires_in=3600
-        )
-        
-        return {
-            "download_url": download_url,
-            "expires_at": expires_at,
-            "filename": file.name
-        }
-    
-    async def rename_file(
-        self,
-        file_id: UUID,
-        user_id: UUID,
-        new_name: str
-    ) -> File:
+    def rename_file(self, file_id: str, user_id: str, new_name: str) -> bool:
         """Rename a file."""
-        file = await self.get_file_by_id(file_id, user_id)
-        if not file:
-            raise ValueError("الملف غير موجود")
-        
-        file.name = new_name
-        await self.db.flush()
-        await self.db.refresh(file)
-        
-        return file
+        try:
+            self.db.rename_file(file_id, user_id, new_name)
+            return True
+        except:
+            return False
     
-    async def move_file(
-        self,
-        file_id: UUID,
-        user_id: UUID,
-        target_folder_id: Optional[UUID]
-    ) -> File:
+    def move_file(self, file_id: str, user_id: str, new_folder_id: str = None) -> bool:
         """Move a file to a different folder."""
-        file = await self.get_file_by_id(file_id, user_id)
-        if not file:
-            raise ValueError("الملف غير موجود")
-        
-        # Validate target folder
-        if target_folder_id:
-            folder = await self.db.execute(
-                select(Folder).where(
-                    Folder.id == target_folder_id,
-                    Folder.user_id == user_id
-                )
-            )
-            if not folder.scalar_one_or_none():
-                raise ValueError("المجلد الهدف غير موجود")
-        
-        file.folder_id = target_folder_id
-        await self.db.flush()
-        await self.db.refresh(file)
-        
-        return file
+        try:
+            self.db.move_file(file_id, user_id, new_folder_id)
+            return True
+        except:
+            return False
     
-    async def trash_file(self, file_id: UUID, user_id: UUID) -> File:
-        """Move a file to trash (soft delete)."""
-        file = await self.get_file_by_id(file_id, user_id)
-        if not file:
-            raise ValueError("الملف غير موجود")
+    def delete_file(self, file_id: str, user_id: str, permanent: bool = False) -> bool:
+        """
+        Delete a file.
         
-        file.is_trashed = True
-        file.trashed_at = datetime.now(timezone.utc)
-        file.original_folder_id = file.folder_id
-        file.folder_id = None
-        
-        await self.db.flush()
-        await self.db.refresh(file)
-        
-        return file
+        Args:
+            file_id: File's ID
+            user_id: User's ID
+            permanent: If True, permanently delete. If False, move to trash.
+        """
+        try:
+            if permanent:
+                # Delete from Telegram first
+                chunks = self.db.get_chunks(file_id)
+                for chunk in chunks:
+                    try:
+                        self.storage.delete_message(chunk["message_id"])
+                    except:
+                        pass  # Continue even if Telegram delete fails
+                
+                # Delete from database
+                self.db.permanent_delete(file_id, user_id)
+            else:
+                # Soft delete (move to trash)
+                self.db.soft_delete_file(file_id, user_id)
+            
+            return True
+        except Exception as e:
+            print(f"[FILE] Delete failed: {e}")
+            return False
     
-    async def restore_file(self, file_id: UUID, user_id: UUID) -> File:
+    def restore_file(self, file_id: str, user_id: str) -> bool:
         """Restore a file from trash."""
-        file = await self.get_file_by_id(file_id, user_id, include_trashed=True)
-        if not file or not file.is_trashed:
-            raise ValueError("الملف غير موجود في سلة المحذوفات")
-        
-        file.is_trashed = False
-        file.trashed_at = None
-        file.folder_id = file.original_folder_id
-        file.original_folder_id = None
-        
-        await self.db.flush()
-        await self.db.refresh(file)
-        
-        return file
+        try:
+            self.db.restore_file(file_id, user_id)
+            return True
+        except:
+            return False
     
-    async def delete_file_permanently(
-        self,
-        file_id: UUID,
-        user_id: UUID
-    ) -> None:
-        """Permanently delete a file from storage and database."""
-        file = await self.get_file_by_id(file_id, user_id, include_trashed=True)
-        if not file:
-            raise ValueError("الملف غير موجود")
-        
-        # Delete from storage
-        await self.storage.delete_object(file.storage_key)
-        
-        # Update user storage
-        user = await self.db.execute(
-            select(User).where(User.id == user_id)
-        )
-        user = user.scalar_one()
-        user.storage_used = max(0, user.storage_used - file.size_bytes)
-        
-        # Delete from database
-        await self.db.delete(file)
-        await self.db.flush()
+    def get_trash(self, user_id: str) -> List[Dict]:
+        """Get all files in trash."""
+        files = self.db.get_trash(user_id)
+        return [{
+            "id": f["id"],
+            "name": f["filename"],
+            "size": f.get("total_size", 0),
+            "is_folder": f.get("is_folder", False),
+            "deleted_at": f.get("deleted_at"),
+        } for f in files]
     
-    async def empty_trash(self, user_id: UUID) -> int:
-        """
-        Permanently delete all files in trash.
-        
-        Returns:
-            Number of files deleted
-        """
-        # Get all trashed files
-        result = await self.db.execute(
-            select(File).where(
-                File.user_id == user_id,
-                File.is_trashed == True
-            )
-        )
-        files = list(result.scalars().all())
-        
-        if not files:
-            return 0
-        
-        # Delete from storage
-        storage_keys = [f.storage_key for f in files]
-        await self.storage.delete_objects(storage_keys)
-        
-        # Calculate total size
-        total_size = sum(f.size_bytes for f in files)
-        
-        # Update user storage
-        user = await self.db.execute(
-            select(User).where(User.id == user_id)
-        )
-        user = user.scalar_one()
-        user.storage_used = max(0, user.storage_used - total_size)
-        
-        # Delete from database
-        await self.db.execute(
-            delete(File).where(
-                File.user_id == user_id,
-                File.is_trashed == True
-            )
-        )
-        await self.db.flush()
-        
-        return len(files)
+    def empty_trash(self, user_id: str) -> int:
+        """Empty the trash. Returns number of files deleted."""
+        trashed = self.db.get_trash(user_id)
+        count = 0
+        for f in trashed:
+            if self.delete_file(f["id"], user_id, permanent=True):
+                count += 1
+        return count
+    
+    def create_share_link(self, file_id: str) -> Optional[str]:
+        """Create a share link for a file."""
+        token = secrets.token_urlsafe(16)
+        try:
+            self.db.set_share_token(file_id, token)
+            return token
+        except:
+            return None
+    
+    def get_file_by_share_token(self, token: str) -> Optional[Dict]:
+        """Get a file by its share token."""
+        return self.db.get_file_by_token(token)
+    
+    def get_breadcrumbs(self, folder_id: str) -> List[Dict]:
+        """Get breadcrumb navigation for a folder."""
+        return self.db.get_breadcrumbs(folder_id)
+
+
+# Convenience instance
+file_service = FileService()
